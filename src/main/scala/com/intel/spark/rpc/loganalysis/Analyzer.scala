@@ -4,7 +4,7 @@ import java.io.{File, FileFilter, FileWriter}
 import java.net.{InetAddress, UnknownHostException}
 import java.text.SimpleDateFormat
 import java.util
-import java.util.{Calendar, Comparator}
+import java.util.{Calendar, Comparator, TimeZone}
 
 import com.intel.spark.rpc.loganalysis.Main.{analyzer, appId, appInfo, logDir}
 import org.apache.commons.io.FileUtils
@@ -60,6 +60,8 @@ class Analyzer(val appInfo: AppHistoryInfo, val logDir: File, val hstIpMaps: col
     if(!appInfo.isCompleted){
       throw new Exception(s"${appInfo.getAppName} is still running")
     }
+//    calendar.setTimeZone(TimeZone.getTimeZone("GMT"))
+
     calendar.setTimeInMillis(appInfo.getStartEpoch)
     calendar.set(Calendar.MILLISECOND, 0)
     val startDate = calendar.getTime
@@ -178,7 +180,9 @@ class Analyzer(val appInfo: AppHistoryInfo, val logDir: File, val hstIpMaps: col
   }
 
   private def collectInfo(logFiles: Array[File]): Unit ={
-    val truncLogFiles = truncateLogFiles(logDir, logFiles)
+    val truncateStr = Main.config.getProperty("truncate-log-by-time")
+    val truncate = truncateStr != null && "true".equalsIgnoreCase(truncateStr)
+    val truncLogFiles = if(truncate) truncateLogFiles(logDir, logFiles) else logFiles
 
     sortLogFiles(truncLogFiles) // make <site>-endpointref.log at head to get valid site-ip:port map
     truncLogFiles.foreach(f => analyzeEach(f))
@@ -235,11 +239,11 @@ class Analyzer(val appInfo: AppHistoryInfo, val logDir: File, val hstIpMaps: col
         if(!t.targetAddress.isSiteNameSet()) {
           var targetSite = ipPort2SiteMap.getOrElse(t.targetAddress.getAddressName, "unknown")
           if (targetSite == "unknown") {
-            if (!cluster) {
-              targetSite = port2SiteMap.getOrElse(t.targetAddress.getPort(), "unknown")
-            }else{
+//            if (!cluster) {
+//              targetSite = port2SiteMap.getOrElse(t.targetAddress.getPort(), "unknown")
+//            }else{
               targetSite = ipHostMap.getOrElse(t.targetAddress.ip, "unknown")
-            }
+//            }
           }
           t.targetAddress.setSiteName(targetSite)
         }
@@ -408,23 +412,26 @@ class Analyzer(val appInfo: AppHistoryInfo, val logDir: File, val hstIpMaps: col
           val exeMatcher = Analyzer.PATTERN_EXECUTORADDED.findFirstMatchIn(ss)
           exeMatcher.foreach(m =>{
             val id = m.group(1)
-            val cores = m.group(2)
-            val memory = m.group(3)
-            executors.add((id, cores.toInt, memory.toInt))
+            val worker = m.group(2)
+            val cores = m.group(3)
+            val memory = m.group(4)
+            executors.add((s"$worker-$id", cores.toInt, memory.toInt))
           })
         }
         //traffics
         val endPointName = m.group(2)
         if("spark-client" != endPointName){//likely non-local traffic, could be local traffic after resolving ip:port
-        val hostAddr = m.group(3)
+          val hostAddr = m.group(3)
           val ipPortStr = hostAddr.substring(hostAddr.indexOf("@")+1)
           val ipPort = ipPortStr.split(":")
 
           val targetIp = resolveIPAgainstSite(siteAddr, ipPort(0))
           val name = s"$targetIp:${ipPort(1)}"
           array += Traffic(siteAddr, Address(name, "", targetIp, ipPort(1).toInt), len, EndpointRef, executor, true)
-        }else{//local RPC
-          array += Traffic(siteAddr, siteAddr, len, Broadcast, executor, true)
+        }else if("Executor" == m.group(3)){//driver RPC to executors
+          array += Traffic(siteAddr, Address("executors", "executors", "0.0.0.0", 111111111), len, EndpointRef, executor, true)
+        }else{
+          array += Traffic(siteAddr, siteAddr, len, EndpointRef, executor, true)
         }
       })
     })
@@ -481,7 +488,6 @@ class Analyzer(val appInfo: AppHistoryInfo, val logDir: File, val hstIpMaps: col
   }
 
   private def analyzeLogClientport(site: String, file: File, executor: Boolean): Unit ={
-    if(!cluster) {
       Source.fromFile(file).getLines().foreach(line => {
         val matcher = Analyzer.PATTERN_CLIENTPORT.findFirstMatchIn(line)
         matcher.foreach(m => {
@@ -489,7 +495,6 @@ class Analyzer(val appInfo: AppHistoryInfo, val logDir: File, val hstIpMaps: col
           port2SiteMap += (port.toInt -> site)
         })
       })
-    }
   }
 
   private def analyzeLogInbox(site: String, file: File, executor: Boolean): Unit ={
@@ -559,6 +564,74 @@ class Analyzer(val appInfo: AppHistoryInfo, val logDir: File, val hstIpMaps: col
     }
     ipHostMap.getOrElseUpdate(ip, {InetAddress.getByName(ip).getHostName})
   }
+
+  private def totalTraffic(): ((Long, Long), (Long, Long), (Long, Long)) ={
+    var totalTraffic = 0L
+    var totalTrafficBytes = 0L
+    var totalRPC = 0L
+    var totalRPCBytes = 0L
+    var totalBrdShu = 0L
+    var totalBrdShuBytes = 0L
+
+    for((site, traffics) <- analyzer.getAllTraffics){
+      println(s"=======================$site=====================")
+      traffics.foreach(t => {
+        println(s"    $t")
+        totalTraffic += 1
+        totalTrafficBytes += t.size
+
+        if(!(t.logType == Broadcast || t.logType == Shuffle)){
+          totalRPC += 1
+          totalRPCBytes += t.size
+        }else{
+          totalBrdShu += 1
+          totalBrdShuBytes += t.size
+        }
+      })
+    }
+
+    println(s"=======================executors configuration=====================")
+    for((id, cores, memory) <- analyzer.getExecutors){
+      println(s"$id(cores: $cores, memory: ${memory}M)")
+    }
+
+    println(s"=======================summary=====================")
+    println(s"total Traffic: $totalTraffic")
+    println(s"total bytes in Traffic: $totalTrafficBytes")
+    println(s"total RPC: $totalTraffic")
+    println(s"total bytes in RPC: $totalTrafficBytes")
+    println(s"total Shuffle&Broadcast: $totalBrdShu")
+    println(s"total bytes in Shuffle&Broadcast: $totalBrdShuBytes")
+
+    ((totalTraffic, totalTrafficBytes), (totalRPC, totalRPCBytes), (totalBrdShu, totalBrdShuBytes))
+  }
+
+  private def printToDriverTrafficNbr(analyzer: Analyzer): Map[String, (Long, Long)]={
+
+    var totalRPC = 0
+    var totalBytes = 0L
+    for((_, traffics) <- analyzer.getAllTraffics){
+      traffics.foreach(t => {
+        if (t.targetAddress.getSiteName() == "driver" && (!t.isLocal()) && (!(t.logType == Shuffle || t.logType == Broadcast))) {
+          totalRPC += 1
+          totalBytes += t.size
+        }
+      })
+    }
+
+    var totalOutRPC = 0
+    var totalOutBytes = 0L
+    analyzer.getAllTraffics("driver").foreach(t => {
+      if ((!t.isLocal()) && (!(t.logType == Shuffle || t.logType == Broadcast))) {
+        totalOutRPC += 1
+        totalOutBytes += t.size
+      }
+    })
+
+    println(s"Total remote RPC to driver: count($totalRPC), size($totalBytes)")
+    println(s"Total remote RPC from driver: count($totalOutRPC), size($totalOutBytes)")
+    null
+  }
 }
 
 object Analyzer{
@@ -567,6 +640,9 @@ object Analyzer{
     = new Analyzer(appInfo, logDir, hstIpMaps, cluster)
 
   val DF_LOG = new SimpleDateFormat(Main.config.getProperty("log-date-format"))
+  val timeZone = Main.config.getProperty("timezone")
+  if(timeZone != null && timeZone.length>0)
+    DF_LOG.setTimeZone(TimeZone.getTimeZone(timeZone))
 
   val LOG_FILE_NAME_SEPARATOR = if(System.getenv("FILE_NAME_SEPARATOR") != null) System.getenv("FILE_NAME_SEPARATOR") else "-"
 
@@ -588,7 +664,7 @@ object Analyzer{
 
   val PATTERN_BLOCKMANAGER = """RegisterBlockManager\(BlockManagerId\([^,]+, ([^,]+), (\d{4,5}), [^\)]+\)""".r
 
-  val PATTERN_EXECUTORADDED = """ExecutorAdded\(\d+,[^,]+,([^,]+),(\d+),(\d+)\)""".r
+  val PATTERN_EXECUTORADDED = """ExecutorAdded\((\d+),[^,]+,([^,]+),(\d+),(\d+)\)""".r
 
   val PATTERN_LOG_DATE = buildLogDatePatternFromDateFormat(Main.config.getProperty("log-date-format"))
 

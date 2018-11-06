@@ -13,7 +13,7 @@ class ExcelOutput(val logDir: File, val appSummary: AppSummary, val existingFile
   private var rownum = 0
 
   private def createHead(sheet: XSSFSheet, workbook: XSSFWorkbook) = {
-    val heads = Seq("Input Data Size (byte)", "Configurations", "Total Task Number", "Duration (ms)", "Total Traffic on Master", "Total Traffic on Driver",
+    val heads = Seq("Total RPC (Local + Remote)","Remote RPC on Driver", "Input Data Size (byte)", "Configuration", "Total Task Number", "Duration (ms)", "Total Traffic on Master", "Total Traffic on Driver",
     "Total Traffic on Workers", "Traffic per Second on Master", "Traffic per Second on Driver", "Traffic per Second on Workers", "Traffic Size on Master(Min/Avg/Max)",
     "Traffic Size on Driver(Min/Avg/Max)", "Traffic Size on Workers(Min/Avg/Max)")
     rownum += 1
@@ -123,11 +123,16 @@ class ExcelOutput(val logDir: File, val appSummary: AppSummary, val existingFile
     sheet.addMergedRegion(new CellRangeAddress(startRow, rownum, colIndex, colIndex))
 
     colIndex += 1
+    createCell(row, colIndex, getStatisticsOnDriver(), style)
+    sheet.addMergedRegion(new CellRangeAddress(startRow, rownum, colIndex, colIndex))
+
+    colIndex += 1
     createCell(row, colIndex, appSummary.inputSize.toString, style, CellType.NUMERIC)
     sheet.addMergedRegion(new CellRangeAddress(startRow, rownum, colIndex, colIndex))
 
     colIndex += 1
-    createCell(row, colIndex, appSummary.executors.mkString("\r\n"), style)
+//    createCell(row, colIndex, appSummary.executors.mkString("\r\n"), style)
+    createCell(row, colIndex, Main.config.getProperty("resource-configs").replaceAll("\\|", "\n"), style)
     sheet.addMergedRegion(new CellRangeAddress(startRow, rownum, colIndex, colIndex))
 
     colIndex += 1
@@ -139,6 +144,10 @@ class ExcelOutput(val logDir: File, val appSummary: AppSummary, val existingFile
     sheet.addMergedRegion(new CellRangeAddress(startRow, rownum, colIndex, colIndex))
 
     colIndex
+  }
+
+  private def getStatisticsOnDriver(): String ={
+    ""
   }
 
   private def createRows(sheet: XSSFSheet, workbook: XSSFWorkbook, style: CellStyle): Array[Row] ={

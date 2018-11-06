@@ -81,29 +81,6 @@ object Main extends App{
     checkHistoryServer(historyServerUrl, appId)
   }
 
-  def printTraffic(analyzer: Analyzer): Unit ={
-    var totalRPC = 0
-    var totalBytes = 0
-
-    for((site, traffics) <- analyzer.getAllTraffics){
-      println(s"=======================$site=====================")
-      traffics.foreach(t => {
-        println(s"    $t")
-        totalRPC += 1
-        totalBytes += t.size
-      })
-    }
-
-    println(s"=======================executors configuration=====================")
-    for((id, cores, memory) <- analyzer.getExecutors){
-      println(s"$id(cores: $cores, memory: ${memory}M)")
-    }
-
-    println(s"=======================summary=====================")
-    println(s"total RPC messages: $totalRPC")
-    println(s"total bytes in RPC: $totalBytes")
-  }
-
   val config = loadConfig()
 
   println("configurations are, ")
@@ -122,7 +99,7 @@ object Main extends App{
 
   //app id
   val appId = config.getProperty(NAME_CFG_APP_ID)
-  assert(!isBlankStr(env), "need $NAME_CFG_APP_ID")
+  assert(!isBlankStr(appId), "need $NAME_CFG_APP_ID")
 
   //app info
   val appInfo = validateAppOnHistoryServer(config)
@@ -133,6 +110,4 @@ object Main extends App{
   //analyzing
   val analyzer = Analyzer(appInfo, logDir, hstIpMaps, "cluster" == env)
   analyzer.analyze()
-
-  printTraffic(analyzer)
 }
